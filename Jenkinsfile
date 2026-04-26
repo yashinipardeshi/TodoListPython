@@ -1,6 +1,6 @@
 pipeline {
     agent {
-        label 'newNode'   // replace with your actual node label
+        label 'newNode'
     }
 
     environment {
@@ -8,10 +8,10 @@ pipeline {
         ARM_CLIENT_SECRET   = credentials('ARM_CLIENT_SECRET')
         ARM_TENANT_ID       = credentials('ARM_TENANT_ID')
         ARM_SUBSCRIPTION_ID = credentials('ARM_SUBSCRIPTION_ID')
-        DOCKER_USERNAME     = credentials('DOCKER_USERNAME')
-        DOCKER_PAT          = credentials('DOCKER_PAT')
 
-        IMAGE_NAME          = "${DOCKER_USERNAME}/todolist"
+        ACR_NAME            = "yashiniregistry123"
+        ACR_LOGIN_SERVER    = "yashiniregistry123.azurecr.io"
+        IMAGE_NAME          = "yashiniregistry123.azurecr.io/todolist"
         IMAGE_TAG           = "${BUILD_NUMBER}"
 
         RESOURCE_GROUP      = "azure-terraform-git"
@@ -35,7 +35,6 @@ pipeline {
 
         stage('Verify Tools') {
             steps {
-                // Sanity check — confirms az and docker are reachable on the slave
                 sh '''
                     echo "--- Node info ---"
                     hostname
@@ -70,23 +69,6 @@ pipeline {
             }
         }
 
-        stage('Push to Docker Hub') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'DOCKER_USERNAME', variable: 'DOCKER_USER'),
-                    string(credentialsId: 'DOCKER_PAT',      variable: 'DOCKER_TOKEN')
-                ]) {
-                    sh '''
-                        echo "$DOCKER_TOKEN" | docker login -u "$DOCKER_USER" --password-stdin
-                        docker push "$DOCKER_USER/todolist:$BUILD_NUMBER"
-                        docker push "$DOCKER_USER/todolist:latest"
-                        docker logout
-                    '''
-                }
-                echo "Pushed ${IMAGE_NAME}:${IMAGE_TAG}"
-            }
-        }
-
         stage('Azure Login') {
             steps {
                 withCredentials([
@@ -105,6 +87,20 @@ pipeline {
                         echo "Azure login successful"
                     '''
                 }
+            }
+        }
+
+        stage('Push to ACR') {
+            steps {
+                sh '''
+                    # Authenticate Docker to ACR using the already-logged-in Azure CLI
+                    az acr login --name "$ACR_NAME"
+
+                    docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+                    docker push "${IMAGE_NAME}:latest"
+
+                    echo "Pushed ${IMAGE_NAME}:${IMAGE_TAG} to ACR"
+                '''
             }
         }
 
@@ -129,6 +125,7 @@ pipeline {
                         Action       : UPDATE existing app
                         App name     : ${ACA_APP_NAME}
                         Resource grp : ${RESOURCE_GROUP}
+                        Registry     : ${ACR_LOGIN_SERVER}
                         New image    : ${IMAGE_NAME}:${IMAGE_TAG}
                         Strategy     : Rolling revision (zero downtime)
                         ========================================
@@ -143,6 +140,7 @@ pipeline {
                         App name     : ${ACA_APP_NAME}
                         Environment  : ${ACA_ENV_NAME}
                         Resource grp : ${RESOURCE_GROUP}
+                        Registry     : ${ACR_LOGIN_SERVER}
                         Image        : ${IMAGE_NAME}:${IMAGE_TAG}
                         Port         : 8080 (external ingress)
                         Replicas     : min 1 / max 3
@@ -155,7 +153,6 @@ pipeline {
         }
 
         stage('Approval') {
-            // Approval can run on master since it's just a UI pause
             agent { label 'built-in' }
             steps {
                 input message: "Build #${BUILD_NUMBER} — Review deployment preview. Proceed?",
@@ -201,144 +198,92 @@ pipeline {
             }
         }
 
-        // stage('Deploy to Azure Container Apps') {
-        //     steps {
-        //         withCredentials([
-        //             string(credentialsId: 'DOCKER_USERNAME', variable: 'DH_USER'),
-        //             string(credentialsId: 'DOCKER_PAT',      variable: 'DH_TOKEN')
-        //         ]) {
-        //             script {
-        //                 if (env.APP_EXISTS == "true") {
-        //                     echo "Updating existing app to ${IMAGE_NAME}:${IMAGE_TAG}..."
-        //                     sh """
-        //                         az containerapp update \
-        //                             --name "${ACA_APP_NAME}" \
-        //                             --resource-group "${RESOURCE_GROUP}" \
-        //                             --image "${IMAGE_NAME}:${IMAGE_TAG}" \
-        //                             --output none
-        //                     """
-        //                 } else {
-        //                     echo "Creating new Container App..."
-        //                     sh '''
-        //                         az containerapp create \
-        //                             --name "$ACA_APP_NAME" \
-        //                             --resource-group "$RESOURCE_GROUP" \
-        //                             --environment "$ACA_ENV_NAME" \
-        //                             --image "$DH_USER/todolist:$BUILD_NUMBER" \
-        //                             --registry-server "index.docker.io" \
-        //                             --registry-username "$DH_USER" \
-        //                             --registry-password "$DH_TOKEN" \
-        //                             --target-port 8080 \
-        //                             --ingress external \
-        //                             --min-replicas 1 \
-        //                             --max-replicas 3 \
-        //                             --cpu 0.5 \
-        //                             --memory 1.0Gi \
-        //                             --output none
-        //                     '''
-        //                 }
-
-        //                 def appUrl = sh(
-        //                     script: """
-        //                         az containerapp show \
-        //                             --name "${ACA_APP_NAME}" \
-        //                             --resource-group "${RESOURCE_GROUP}" \
-        //                             --query properties.configuration.ingress.fqdn \
-        //                             --output tsv
-        //                     """,
-        //                     returnStdout: true
-        //                 ).trim()
-
-        //                 echo """
-        //                 ========================================
-        //                 DEPLOYMENT COMPLETE
-        //                 Build    : #${BUILD_NUMBER}
-        //                 Image    : ${IMAGE_NAME}:${IMAGE_TAG}
-        //                 Live URL : https://${appUrl}
-        //                 ========================================
-        //                 """
-        //                 env.APP_URL = appUrl
-        //             }
-        //         }
-        //     }
-        // }
         stage('Deploy to Azure Container Apps') {
-        steps {
-        withCredentials([
-            string(credentialsId: 'DOCKER_USERNAME', variable: 'DH_USER'),
-            string(credentialsId: 'DOCKER_PAT',      variable: 'DH_TOKEN')
-        ]) {
-            script {
-                if (env.APP_EXISTS == "true") {
-                    echo "Updating existing app — new revision will be created..."
-                    sh """
-                        /usr/bin/az containerapp update \
-                            --name "${ACA_APP_NAME}" \
-                            --resource-group "${RESOURCE_GROUP}" \
-                            --image "${IMAGE_NAME}:${IMAGE_TAG}" \
-                            --revision-suffix "build-${IMAGE_TAG}" \
-                            --min-replicas 1 \
-                            --max-replicas 3 \
-                            --output none
-                    """
+            steps {
+                script {
+                    // Fetch ACR credentials to allow ACA to pull from your private registry
+                    def acrUsername = sh(
+                        script: 'az acr credential show --name "$ACR_NAME" --query username -o tsv',
+                        returnStdout: true
+                    ).trim()
 
-                    // Show active revisions after update
-                    sh """
-                        echo "=== Active revisions ==="
-                        /usr/bin/az containerapp revision list \
-                            --name "${ACA_APP_NAME}" \
-                            --resource-group "${RESOURCE_GROUP}" \
-                            --query "[].{Name:name, Image:properties.template.containers[0].image, Active:properties.active, Traffic:properties.trafficWeight}" \
-                            --output table
-                    """
+                    def acrPassword = sh(
+                        script: 'az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv',
+                        returnStdout: true
+                    ).trim()
 
-                } else {
-                    echo "Creating new Container App with health probes..."
-                    sh '''
-                        /usr/bin/az containerapp create \
-                            --name "$ACA_APP_NAME" \
-                            --resource-group "$RESOURCE_GROUP" \
-                            --environment "$ACA_ENV_NAME" \
-                            --image "$DH_USER/todolist:$BUILD_NUMBER" \
-                            --registry-server "index.docker.io" \
-                            --registry-username "$DH_USER" \
-                            --registry-password "$DH_TOKEN" \
-                            --target-port 8080 \
-                            --ingress external \
-                            --min-replicas 1 \
-                            --max-replicas 3 \
-                            --cpu 0.5 \
-                            --memory 1.0Gi \
-                            --revision-suffix "build-$BUILD_NUMBER" \
-                            --output none
-                    '''
+                    env.ACR_USERNAME = acrUsername
+                    env.ACR_PASSWORD = acrPassword
+
+                    if (env.APP_EXISTS == "true") {
+                        echo "Updating existing app — new revision will be created..."
+                        sh """
+                            /usr/bin/az containerapp update \
+                                --name "${ACA_APP_NAME}" \
+                                --resource-group "${RESOURCE_GROUP}" \
+                                --image "${IMAGE_NAME}:${IMAGE_TAG}" \
+                                --revision-suffix "build-${IMAGE_TAG}" \
+                                --min-replicas 1 \
+                                --max-replicas 3 \
+                                --output none
+                        """
+
+                        sh """
+                            echo "=== Active revisions ==="
+                            /usr/bin/az containerapp revision list \
+                                --name "${ACA_APP_NAME}" \
+                                --resource-group "${RESOURCE_GROUP}" \
+                                --query "[].{Name:name, Image:properties.template.containers[0].image, Active:properties.active, Traffic:properties.trafficWeight}" \
+                                --output table
+                        """
+
+                    } else {
+                        echo "Creating new Container App pulling from ACR..."
+                        sh """
+                            /usr/bin/az containerapp create \
+                                --name "${ACA_APP_NAME}" \
+                                --resource-group "${RESOURCE_GROUP}" \
+                                --environment "${ACA_ENV_NAME}" \
+                                --image "${IMAGE_NAME}:${IMAGE_TAG}" \
+                                --registry-server "${ACR_LOGIN_SERVER}" \
+                                --registry-username "${env.ACR_USERNAME}" \
+                                --registry-password "${env.ACR_PASSWORD}" \
+                                --target-port 8080 \
+                                --ingress external \
+                                --min-replicas 1 \
+                                --max-replicas 3 \
+                                --cpu 0.5 \
+                                --memory 1.0Gi \
+                                --revision-suffix "build-${IMAGE_TAG}" \
+                                --output none
+                        """
+                    }
+
+                    def appUrl = sh(
+                        script: """
+                            /usr/bin/az containerapp show \
+                                --name "${ACA_APP_NAME}" \
+                                --resource-group "${RESOURCE_GROUP}" \
+                                --query properties.configuration.ingress.fqdn \
+                                --output tsv
+                        """,
+                        returnStdout: true
+                    ).trim()
+
+                    echo """
+                    ========================================
+                    DEPLOYMENT COMPLETE
+                    Build    : #${BUILD_NUMBER}
+                    Registry : ${ACR_LOGIN_SERVER}
+                    Image    : ${IMAGE_NAME}:${IMAGE_TAG}
+                    Revision : build-${IMAGE_TAG}
+                    Live URL : https://${appUrl}
+                    ========================================
+                    """
+                    env.APP_URL = appUrl
                 }
-
-                def appUrl = sh(
-                    script: """
-                        /usr/bin/az containerapp show \
-                            --name "${ACA_APP_NAME}" \
-                            --resource-group "${RESOURCE_GROUP}" \
-                            --query properties.configuration.ingress.fqdn \
-                            --output tsv
-                    """,
-                    returnStdout: true
-                ).trim()
-
-                echo """
-                ========================================
-                DEPLOYMENT COMPLETE
-                Build    : #${BUILD_NUMBER}
-                Image    : ${IMAGE_NAME}:${IMAGE_TAG}
-                Revision : build-${IMAGE_TAG}
-                Live URL : https://${appUrl}
-                ========================================
-                """
-                env.APP_URL = appUrl
             }
         }
-    }
-}
     }
 
     post {
