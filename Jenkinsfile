@@ -93,12 +93,9 @@ pipeline {
         stage('Push to ACR') {
             steps {
                 sh '''
-                    # Authenticate Docker to ACR using the already-logged-in Azure CLI
                     az acr login --name "$ACR_NAME"
-
                     docker push "${IMAGE_NAME}:${IMAGE_TAG}"
                     docker push "${IMAGE_NAME}:latest"
-
                     echo "Pushed ${IMAGE_NAME}:${IMAGE_TAG} to ACR"
                 '''
             }
@@ -201,27 +198,26 @@ pipeline {
         stage('Deploy to Azure Container Apps') {
             steps {
                 script {
-                    // Fetch ACR credentials to allow ACA to pull from your private registry
-                    def acrUsername = sh(
-                        script: 'az acr credential show --name "$ACR_NAME" --query username -o tsv',
+                    // Fetch ACR admin credentials (admin is enabled on the registry)
+                    env.ACR_USERNAME = sh(
+                        script: "az acr credential show --name ${ACR_NAME} --query username -o tsv",
                         returnStdout: true
                     ).trim()
-
-                    def acrPassword = sh(
+                    env.ACR_PASSWORD = sh(
                         script: 'az acr credential show --name "$ACR_NAME" --query "passwords[0].value" -o tsv',
                         returnStdout: true
                     ).trim()
 
-                    env.ACR_USERNAME = acrUsername
-                    env.ACR_PASSWORD = acrPassword
-
                     if (env.APP_EXISTS == "true") {
-                        echo "Updating existing app — new revision will be created..."
+                        echo "Updating existing app — registry credentials refreshed..."
                         sh """
                             /usr/bin/az containerapp update \
                                 --name "${ACA_APP_NAME}" \
                                 --resource-group "${RESOURCE_GROUP}" \
                                 --image "${IMAGE_NAME}:${IMAGE_TAG}" \
+                                --registry-server "${ACR_LOGIN_SERVER}" \
+                                --registry-username "${env.ACR_USERNAME}" \
+                                --registry-password "${env.ACR_PASSWORD}" \
                                 --revision-suffix "build-${IMAGE_TAG}" \
                                 --min-replicas 1 \
                                 --max-replicas 3 \
