@@ -198,9 +198,9 @@ pipeline {
         stage('Deploy to Azure Container Apps') {
             steps {
                 script {
-                    // Fetch ACR admin credentials (admin is enabled on the registry)
+                    // Fetch ACR admin credentials
                     env.ACR_USERNAME = sh(
-                        script: "az acr credential show --name ${ACR_NAME} --query username -o tsv",
+                        script: 'az acr credential show --name "$ACR_NAME" --query username -o tsv',
                         returnStdout: true
                     ).trim()
                     env.ACR_PASSWORD = sh(
@@ -209,15 +209,27 @@ pipeline {
                     ).trim()
 
                     if (env.APP_EXISTS == "true") {
-                        echo "Updating existing app — registry credentials refreshed..."
+                        echo "Registering ACR credentials on the app (idempotent)..."
+                        // Step 1: az containerapp registry set — registers/refreshes ACR creds.
+                        // This is idempotent: safe to run on every build.
+                        // Required because az containerapp update does NOT accept --registry-* flags.
+                        sh """
+                            /usr/bin/az containerapp registry set \
+                                --name "${ACA_APP_NAME}" \
+                                --resource-group "${RESOURCE_GROUP}" \
+                                --server "${ACR_LOGIN_SERVER}" \
+                                --username "${env.ACR_USERNAME}" \
+                                --password "${env.ACR_PASSWORD}" \
+                                --output none
+                        """
+
+                        echo "Updating image to ${IMAGE_NAME}:${IMAGE_TAG}..."
+                        // Step 2: plain update — only image and revision flags, no registry flags
                         sh """
                             /usr/bin/az containerapp update \
                                 --name "${ACA_APP_NAME}" \
                                 --resource-group "${RESOURCE_GROUP}" \
                                 --image "${IMAGE_NAME}:${IMAGE_TAG}" \
-                                --registry-server "${ACR_LOGIN_SERVER}" \
-                                --registry-username "${env.ACR_USERNAME}" \
-                                --registry-password "${env.ACR_PASSWORD}" \
                                 --revision-suffix "build-${IMAGE_TAG}" \
                                 --min-replicas 1 \
                                 --max-replicas 3 \
@@ -235,6 +247,7 @@ pipeline {
 
                     } else {
                         echo "Creating new Container App pulling from ACR..."
+                        // For create, --registry-* flags ARE supported
                         sh """
                             /usr/bin/az containerapp create \
                                 --name "${ACA_APP_NAME}" \
