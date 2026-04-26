@@ -17,7 +17,7 @@ pipeline {
         RESOURCE_GROUP      = "azure-terraform-git"
         LOCATION            = "eastus"
         ACA_ENV_NAME        = "todolist-env"
-        ACA_APP_NAME        = "todolist-app"
+        ACA_APP_NAME        = "todolist-app2"
     }
 
     options {
@@ -201,67 +201,144 @@ pipeline {
             }
         }
 
+        // stage('Deploy to Azure Container Apps') {
+        //     steps {
+        //         withCredentials([
+        //             string(credentialsId: 'DOCKER_USERNAME', variable: 'DH_USER'),
+        //             string(credentialsId: 'DOCKER_PAT',      variable: 'DH_TOKEN')
+        //         ]) {
+        //             script {
+        //                 if (env.APP_EXISTS == "true") {
+        //                     echo "Updating existing app to ${IMAGE_NAME}:${IMAGE_TAG}..."
+        //                     sh """
+        //                         az containerapp update \
+        //                             --name "${ACA_APP_NAME}" \
+        //                             --resource-group "${RESOURCE_GROUP}" \
+        //                             --image "${IMAGE_NAME}:${IMAGE_TAG}" \
+        //                             --output none
+        //                     """
+        //                 } else {
+        //                     echo "Creating new Container App..."
+        //                     sh '''
+        //                         az containerapp create \
+        //                             --name "$ACA_APP_NAME" \
+        //                             --resource-group "$RESOURCE_GROUP" \
+        //                             --environment "$ACA_ENV_NAME" \
+        //                             --image "$DH_USER/todolist:$BUILD_NUMBER" \
+        //                             --registry-server "index.docker.io" \
+        //                             --registry-username "$DH_USER" \
+        //                             --registry-password "$DH_TOKEN" \
+        //                             --target-port 8080 \
+        //                             --ingress external \
+        //                             --min-replicas 1 \
+        //                             --max-replicas 3 \
+        //                             --cpu 0.5 \
+        //                             --memory 1.0Gi \
+        //                             --output none
+        //                     '''
+        //                 }
+
+        //                 def appUrl = sh(
+        //                     script: """
+        //                         az containerapp show \
+        //                             --name "${ACA_APP_NAME}" \
+        //                             --resource-group "${RESOURCE_GROUP}" \
+        //                             --query properties.configuration.ingress.fqdn \
+        //                             --output tsv
+        //                     """,
+        //                     returnStdout: true
+        //                 ).trim()
+
+        //                 echo """
+        //                 ========================================
+        //                 DEPLOYMENT COMPLETE
+        //                 Build    : #${BUILD_NUMBER}
+        //                 Image    : ${IMAGE_NAME}:${IMAGE_TAG}
+        //                 Live URL : https://${appUrl}
+        //                 ========================================
+        //                 """
+        //                 env.APP_URL = appUrl
+        //             }
+        //         }
+        //     }
+        // }
         stage('Deploy to Azure Container Apps') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'DOCKER_USERNAME', variable: 'DH_USER'),
-                    string(credentialsId: 'DOCKER_PAT',      variable: 'DH_TOKEN')
-                ]) {
-                    script {
-                        if (env.APP_EXISTS == "true") {
-                            echo "Updating existing app to ${IMAGE_NAME}:${IMAGE_TAG}..."
-                            sh """
-                                az containerapp update \
-                                    --name "${ACA_APP_NAME}" \
-                                    --resource-group "${RESOURCE_GROUP}" \
-                                    --image "${IMAGE_NAME}:${IMAGE_TAG}" \
-                                    --output none
-                            """
-                        } else {
-                            echo "Creating new Container App..."
-                            sh '''
-                                az containerapp create \
-                                    --name "$ACA_APP_NAME" \
-                                    --resource-group "$RESOURCE_GROUP" \
-                                    --environment "$ACA_ENV_NAME" \
-                                    --image "$DH_USER/todolist:$BUILD_NUMBER" \
-                                    --registry-server "index.docker.io" \
-                                    --registry-username "$DH_USER" \
-                                    --registry-password "$DH_TOKEN" \
-                                    --target-port 8080 \
-                                    --ingress external \
-                                    --min-replicas 1 \
-                                    --max-replicas 3 \
-                                    --cpu 0.5 \
-                                    --memory 1.0Gi \
-                                    --output none
-                            '''
-                        }
+        steps {
+        withCredentials([
+            string(credentialsId: 'DOCKER_USERNAME', variable: 'DH_USER'),
+            string(credentialsId: 'DOCKER_PAT',      variable: 'DH_TOKEN')
+        ]) {
+            script {
+                if (env.APP_EXISTS == "true") {
+                    echo "Updating existing app — new revision will be created..."
+                    sh """
+                        /usr/bin/az containerapp update \
+                            --name "${ACA_APP_NAME}" \
+                            --resource-group "${RESOURCE_GROUP}" \
+                            --image "${IMAGE_NAME}:${IMAGE_TAG}" \
+                            --revision-suffix "build-${IMAGE_TAG}" \
+                            --min-replicas 1 \
+                            --max-replicas 3 \
+                            --output none
+                    """
 
-                        def appUrl = sh(
-                            script: """
-                                az containerapp show \
-                                    --name "${ACA_APP_NAME}" \
-                                    --resource-group "${RESOURCE_GROUP}" \
-                                    --query properties.configuration.ingress.fqdn \
-                                    --output tsv
-                            """,
-                            returnStdout: true
-                        ).trim()
+                    // Show active revisions after update
+                    sh """
+                        echo "=== Active revisions ==="
+                        /usr/bin/az containerapp revision list \
+                            --name "${ACA_APP_NAME}" \
+                            --resource-group "${RESOURCE_GROUP}" \
+                            --query "[].{Name:name, Image:properties.template.containers[0].image, Active:properties.active, Traffic:properties.trafficWeight}" \
+                            --output table
+                    """
 
-                        echo """
-                        ========================================
-                        DEPLOYMENT COMPLETE
-                        Build    : #${BUILD_NUMBER}
-                        Image    : ${IMAGE_NAME}:${IMAGE_TAG}
-                        Live URL : https://${appUrl}
-                        ========================================
-                        """
-                        env.APP_URL = appUrl
-                    }
+                } else {
+                    echo "Creating new Container App with health probes..."
+                    sh '''
+                        /usr/bin/az containerapp create \
+                            --name "$ACA_APP_NAME" \
+                            --resource-group "$RESOURCE_GROUP" \
+                            --environment "$ACA_ENV_NAME" \
+                            --image "$DH_USER/todolist:$BUILD_NUMBER" \
+                            --registry-server "index.docker.io" \
+                            --registry-username "$DH_USER" \
+                            --registry-password "$DH_TOKEN" \
+                            --target-port 8080 \
+                            --ingress external \
+                            --min-replicas 1 \
+                            --max-replicas 3 \
+                            --cpu 0.5 \
+                            --memory 1.0Gi \
+                            --revision-suffix "build-$BUILD_NUMBER" \
+                            --output none
+                    '''
                 }
+
+                def appUrl = sh(
+                    script: """
+                        /usr/bin/az containerapp show \
+                            --name "${ACA_APP_NAME}" \
+                            --resource-group "${RESOURCE_GROUP}" \
+                            --query properties.configuration.ingress.fqdn \
+                            --output tsv
+                    """,
+                    returnStdout: true
+                ).trim()
+
+                echo """
+                ========================================
+                DEPLOYMENT COMPLETE
+                Build    : #${BUILD_NUMBER}
+                Image    : ${IMAGE_NAME}:${IMAGE_TAG}
+                Revision : build-${IMAGE_TAG}
+                Live URL : https://${appUrl}
+                ========================================
+                """
+                env.APP_URL = appUrl
             }
         }
+    }
+}
     }
 
     post {
