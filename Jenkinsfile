@@ -210,9 +210,6 @@ pipeline {
 
                     if (env.APP_EXISTS == "true") {
                         echo "Registering ACR credentials on the app (idempotent)..."
-                        // Step 1: az containerapp registry set — registers/refreshes ACR creds.
-                        // This is idempotent: safe to run on every build.
-                        // Required because az containerapp update does NOT accept --registry-* flags.
                         sh """
                             /usr/bin/az containerapp registry set \
                                 --name "${ACA_APP_NAME}" \
@@ -224,7 +221,6 @@ pipeline {
                         """
 
                         echo "Updating image to ${IMAGE_NAME}:${IMAGE_TAG}..."
-                        // Step 2: plain update — only image and revision flags, no registry flags
                         sh """
                             /usr/bin/az containerapp update \
                                 --name "${ACA_APP_NAME}" \
@@ -247,7 +243,6 @@ pipeline {
 
                     } else {
                         echo "Creating new Container App pulling from ACR..."
-                        // For create, --registry-* flags ARE supported
                         sh """
                             /usr/bin/az containerapp create \
                                 --name "${ACA_APP_NAME}" \
