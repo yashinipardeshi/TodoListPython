@@ -12,7 +12,7 @@ def home():
         <title>Calculator</title>
     </head>
     <body>
-        <h2>Simple Calculator</h2>
+        <h2>Simple Calculator Test</h2>
 
         <input type="number" id="a" placeholder="Enter first number">
         <input type="number" id="b" placeholder="Enter second number">
